@@ -162,6 +162,7 @@ table.sheet { width: 100%; border-collapse: collapse; font-size: 14px; min-width
       <button class="tab" role="tab" data-tab="resumen" aria-selected="true">Resumen</button>
       <button class="tab" role="tab" data-tab="simulador" aria-selected="false">Simulador</button>
       <button class="tab" role="tab" data-tab="ventas" aria-selected="false">Ventas reales</button>
+      <button class="tab" role="tab" data-tab="embajadores" aria-selected="false">Embajadores</button>
       <button class="tab" role="tab" data-tab="gastos" aria-selected="false">Gastos</button>
       <button class="tab" role="tab" data-tab="reparto" aria-selected="false">Reparto</button>
       <button class="tab" role="tab" data-tab="escenarios" aria-selected="false">Escenarios</button>
@@ -336,6 +337,29 @@ table.sheet { width: 100%; border-collapse: collapse; font-size: 14px; min-width
     </div>
   </section>
 
+  <!-- EMBAJADORES -->
+  <section class="view" data-view="embajadores" hidden>
+    <div class="head">
+      <h2>Embajadores</h2>
+      <p class="muted">Quién vende, en qué escuela está, cuántas pulseras tiene y cuántas lleva vendidas. Los cambios se guardan para todos.</p>
+    </div>
+    <div class="kpis" id="emb-kpis"></div>
+    <div class="panel">
+      <div id="emb-empty" class="empty" hidden><b>Aún no hay embajadores</b><span>Agrega el primero con el botón de abajo.</span></div>
+      <div class="sheet-frame" id="emb-frame"><table class="sheet" id="t-emb" style="min-width:720px"></table></div>
+      <div class="row"><button class="btn primary" id="add-emb">Agregar embajador</button></div>
+    </div>
+    <div class="panel">
+      <h3>Avance por embajador</h3>
+      <p class="note">Pulseras vendidas contra las que tiene cada uno.</p>
+      <div class="milestones" id="emb-progress"></div>
+    </div>
+    <div class="panel">
+      <h3>Por escuela</h3>
+      <div class="sheet-frame"><table class="sheet" id="t-emb-school" style="min-width:480px"></table></div>
+    </div>
+  </section>
+
   <!-- PRECIOS -->
   <section class="view" data-view="precios" hidden>
     <div class="head">
@@ -362,10 +386,10 @@ table.sheet { width: 100%; border-collapse: collapse; font-size: 14px; min-width
   const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
   // ---------- state (filled from the shared store) ----------
-  const S = { expenses: null, split: null, prices: null, sim: null, scenarios: null, priority: null, sales: [] };
+  const S = { expenses: null, split: null, prices: null, sim: null, scenarios: null, priority: null, ambassadors: null, sales: [] };
   const DB = "https://vixxa-finanzas-default-rtdb.firebaseio.com/vixxa";
   let db, canWrite = true, basis = "sim"; // db: undefined while connecting, true when online, null when unreachable
-  const DOCS = ["expenses", "split", "prices", "sim", "scenarios", "priority"];
+  const DOCS = ["expenses", "split", "prices", "sim", "scenarios", "priority", "ambassadors"];
 
   // ---------- tabs ----------
   function showTab(id) {
@@ -655,11 +679,52 @@ table.sheet { width: 100%; border-collapse: collapse; font-size: 14px; min-width
       prices().map((p, i) => `<tr><td><input type="text" data-price="${i}" data-f="label" value="${esc(p.label)}" aria-label="Etapa"${dis()}></td><td><input type="text" data-price="${i}" data-f="period" value="${esc(p.period)}" aria-label="Periodo"${dis()}></td><td style="width:130px">${numInput(`data-price="${i}" data-f="price" min="0" aria-label="Precio ${esc(p.label)}"`, p.price)}</td><td style="width:130px">${p.amb == null ? '<span class="ro muted" style="display:block;padding:10px 12px;text-align:right">—</span>' : numInput(`data-price="${i}" data-f="amb" min="0" aria-label="Precio con embajador ${esc(p.label)}"`, p.amb)}</td><td class="ro n num">${p.amb == null ? "—" : m(p.amb - p.price)}</td></tr>`).join("") + `</tbody>`;
   }
 
+  function renderEmbajadores() {
+    const items = S.ambassadors?.items || [];
+    const has = items.reduce((a, x) => a + (+x.has || 0), 0);
+    const sold = items.reduce((a, x) => a + (+x.sold || 0), 0);
+    const left = items.reduce((a, x) => a + Math.max(0, (+x.has || 0) - (+x.sold || 0)), 0);
+    const nSchools = new Set(items.map(x => (x.school || "").trim().toLowerCase()).filter(Boolean)).size;
+    $("#emb-kpis").innerHTML = kpiHTML([
+      ["Embajadores", int.format(items.length), nSchools === 1 ? "1 escuela" : `${nSchools} escuelas`],
+      ["Pulseras entregadas", int.format(has), "Las que tienen en total"],
+      ["Vendidas", int.format(sold), has ? `${Math.round(sold / has * 100)}% de lo entregado` : "", "pos"],
+      ["Por vender", int.format(left), "Les quedan en mano", left > 0 ? "neg" : "pos"]
+    ]);
+    $("#emb-empty").hidden = items.length > 0;
+    $("#emb-frame").hidden = items.length === 0;
+    const t = $("#t-emb");
+    if (!busyEditing(t)) {
+      t.innerHTML = `<thead><tr><th>Nombre</th><th>Escuela</th><th class="n">Pulseras que tiene</th><th class="n">Vendidas</th><th class="n">Le quedan</th><th></th></tr></thead><tbody>` +
+        items.map((x, i) => {
+          const h = +x.has || 0, s = +x.sold || 0, over = s > h;
+          return `<tr><td><input type="text" data-emb="${i}" data-f="name" value="${esc(x.name)}" placeholder="Nombre" aria-label="Nombre del embajador"${dis()}></td><td><input type="text" data-emb="${i}" data-f="school" value="${esc(x.school)}" placeholder="Escuela" aria-label="Escuela de ${esc(x.name)}"${dis()}></td><td style="width:150px">${numInput(`data-emb="${i}" data-f="has" min="0" aria-label="Pulseras que tiene ${esc(x.name)}"`, h)}</td><td style="width:130px">${numInput(`data-emb="${i}" data-f="sold" min="0" aria-label="Pulseras vendidas ${esc(x.name)}"`, s)}</td><td class="ro n num">${over ? '<span class="pill amb">Vendió de más</span>' : int.format(h - s)}</td><td class="ro n">${canWrite && db ? `<button class="btn ghost" data-delemb="${i}">Quitar</button>` : ""}</td></tr>`;
+        }).join("") +
+        `</tbody><tfoot><tr><td>Total</td><td class="muted">${items.length === 1 ? "1 embajador" : items.length + " embajadores"}</td><td class="n num">${int.format(has)}</td><td class="n num">${int.format(sold)}</td><td class="n num">${int.format(left)}</td><td></td></tr></tfoot>`;
+    }
+    const ranked = [...items].sort((a, b) => (+b.sold || 0) - (+a.sold || 0));
+    $("#emb-progress").innerHTML = ranked.map(x => {
+      const h = +x.has || 0, s = +x.sold || 0, w = h ? Math.min(100, s / h * 100) : 0;
+      return `<div class="ms"><span>${esc(x.name || "Sin nombre")} <span class="muted">· ${esc(x.school || "Sin escuela")}</span></span><span class="num">${int.format(s)} / ${int.format(h)}</span><div class="bar ${w >= 100 ? "ok" : ""}"><i style="width:${w}%"></i></div></div>`;
+    }).join("") || `<p class="note">Agrega embajadores para ver su avance.</p>`;
+    const bySchool = {};
+    for (const x of items) {
+      const k = (x.school || "").trim() || "Sin escuela";
+      const key = k.toLowerCase();
+      bySchool[key] = bySchool[key] || { name: k, n: 0, has: 0, sold: 0, left: 0 };
+      bySchool[key].n++; bySchool[key].has += +x.has || 0; bySchool[key].sold += +x.sold || 0; bySchool[key].left += Math.max(0, (+x.has || 0) - (+x.sold || 0));
+    }
+    const schools = Object.values(bySchool).sort((a, b) => b.sold - a.sold);
+    $("#t-emb-school").innerHTML = `<thead><tr><th>Escuela</th><th class="n">Embajadores</th><th class="n">Tienen</th><th class="n">Vendidas</th><th class="n">Les quedan</th></tr></thead><tbody>` +
+      (schools.map(s => `<tr><td class="rowhead">${esc(s.name)}</td><td class="ro n num">${int.format(s.n)}</td><td class="ro n num">${int.format(s.has)}</td><td class="ro n num">${int.format(s.sold)}</td><td class="ro n num">${int.format(s.left)}</td></tr>`).join("") || `<tr><td class="ro muted" colspan="5">Sin datos todavía</td></tr>`) + `</tbody>`;
+    $("#add-emb").disabled = !canWrite || !db;
+  }
+
   function renderAll() {
     $("#nodata").hidden = !!db || db === undefined;
     const v = $$("section.view").find(s => !s.hidden)?.dataset.view;
     if (!S.prices || !S.expenses) return;
-    ({ resumen: renderResumen, simulador: renderSim, ventas: renderVentas, gastos: renderGastos, reparto: renderReparto, escenarios: renderEscenarios, precios: renderPrecios }[v] || renderResumen)();
+    ({ resumen: renderResumen, simulador: renderSim, ventas: renderVentas, embajadores: renderEmbajadores, gastos: renderGastos, reparto: renderReparto, escenarios: renderEscenarios, precios: renderPrecios }[v] || renderResumen)();
   }
 
   // ---------- edits ----------
@@ -673,6 +738,7 @@ table.sheet { width: 100%; border-collapse: collapse; font-size: 14px; min-width
     else if (el.dataset.split != null) { S.split.items[+el.dataset.split][el.dataset.f] = val; save("split"); }
     else if (el.dataset.scen != null) { const s = S.scenarios.items[+el.dataset.scen]; s.qty = s.qty || {}; s.qty[el.dataset.k] = val; save("scenarios"); }
     else if (el.dataset.price != null) { S.prices.items[+el.dataset.price][el.dataset.f] = val; save("prices"); }
+    else if (el.dataset.emb != null) { S.ambassadors.items[+el.dataset.emb][el.dataset.f] = el.type === "number" ? Math.floor(val) : val; save("ambassadors"); }
     else return;
     requestAnimationFrame(() => { el.blur?.(); renderAll(); });
   });
@@ -683,7 +749,7 @@ table.sheet { width: 100%; border-collapse: collapse; font-size: 14px; min-width
   document.addEventListener("click", async e => {
     const b = e.target.closest("button"); if (!b) return;
     if (b.dataset.basis) { basis = b.dataset.basis; renderReparto(); return; }
-    const delKey = ["del", "delexp", "delprio", "delsplit"].find(k => b.dataset[k] != null);
+    const delKey = ["del", "delexp", "delprio", "delsplit", "delemb"].find(k => b.dataset[k] != null);
     if (!delKey) return;
     const id = delKey + ":" + b.dataset[delKey];
     if (!pending[id]) { pending[id] = true; b.textContent = "¿Seguro?"; setTimeout(() => { if (pending[id]) { delete pending[id]; b.textContent = delKey === "del" ? "Borrar" : "Quitar"; } }, 3000); return; }
@@ -692,6 +758,13 @@ table.sheet { width: 100%; border-collapse: collapse; font-size: 14px; min-width
     if (delKey === "delexp") { S.expenses.items.splice(+b.dataset.delexp, 1); save("expenses"); renderAll(); }
     if (delKey === "delprio") { S.priority.items.splice(+b.dataset.delprio, 1); save("priority"); renderAll(); }
     if (delKey === "delsplit") { S.split.items.splice(+b.dataset.delsplit, 1); save("split"); renderAll(); }
+    if (delKey === "delemb") { S.ambassadors.items.splice(+b.dataset.delemb, 1); save("ambassadors"); renderAll(); }
+  });
+  $("#add-emb").addEventListener("click", () => {
+    S.ambassadors = S.ambassadors || { items: [] };
+    S.ambassadors.items.push({ id: "a" + Date.now(), name: "", school: "", has: 0, sold: 0 });
+    save("ambassadors"); renderAll();
+    const inputs = $$('#t-emb input[data-f="name"]'); inputs[inputs.length - 1]?.focus();
   });
   $("#add-exp").addEventListener("click", () => { S.expenses.items.push({ id: "e" + Date.now(), name: "Nuevo gasto", amount: 0, detail: "", paid: false }); save("expenses"); renderAll(); });
   $("#add-prio").addEventListener("click", () => { S.priority.items.push({ id: "p" + Date.now(), name: "Nuevo pago", amount: 0 }); save("priority"); renderAll(); });
@@ -726,7 +799,7 @@ table.sheet { width: 100%; border-collapse: collapse; font-size: 14px; min-width
       if (busy[name] || again[name]) continue; // our own write is in flight; keep local state
       if (all.config?.[name]) S[name] = all.config[name];
     }
-    for (const n of ["expenses", "split", "priority"]) if (S[n]) S[n].items = Object.values(S[n].items || {});
+    for (const n of ["expenses", "split", "priority", "ambassadors"]) if (S[n]) S[n].items = Object.values(S[n].items || {});
     if (S.scenarios) S.scenarios.items = Object.values(S.scenarios.items || {});
     if (S.prices) S.prices.items = Object.values(S.prices.items || {});
     salesRaw = all.sales || {};
